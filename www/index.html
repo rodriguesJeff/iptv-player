@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <title>IPTV Player</title>
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <!-- Video surfaces behind the page: AVPlay on Tizen, <video> in browsers -->
+  <object id="avplayer" type="application/avplayer"></object>
+  <video id="video" playsinline></video>
+
+  <div id="login" class="screen">
+    <div class="login-box">
+      <h1>IPTV Player</h1>
+      <label>Servidor<input id="f-server" class="focusable" type="url" placeholder="http://servidor:porta" autocomplete="off"></label>
+      <label>Usuário<input id="f-user" class="focusable" type="text" autocomplete="off" autocapitalize="off"></label>
+      <label>Senha<input id="f-pass" class="focusable" type="password" autocomplete="off"></label>
+      <button id="f-format" class="focusable btn" type="button">Formato ao vivo: m3u8</button>
+      <button id="f-login" class="focusable btn primary" type="button">Entrar</button>
+      <p id="login-msg" class="msg"></p>
+    </div>
+  </div>
+
+  <div id="main" class="screen hidden">
+    <header id="tabs" data-group="tabs">
+      <button class="focusable tab" data-tab="live">Ao vivo</button>
+      <button class="focusable tab" data-tab="vod">Filmes</button>
+      <button class="focusable tab" data-tab="series">Séries</button>
+      <input id="search" class="focusable" type="search" placeholder="Buscar…" autocomplete="off">
+      <span id="account" class="account"></span>
+      <button id="logout" class="focusable tab" type="button">Sair</button>
+    </header>
+    <div class="body">
+      <nav id="cats" data-group="cats"></nav>
+      <section id="items" data-group="items"></section>
+      <aside id="details">
+        <div id="preview"></div>
+        <div id="info"></div>
+      </aside>
+    </div>
+  </div>
+
+  <div id="series" class="screen hidden">
+    <header class="series-head">
+      <img id="series-cover" alt="">
+      <div>
+        <h2 id="series-title"></h2>
+        <p id="series-plot"></p>
+      </div>
+    </header>
+    <div class="body">
+      <nav id="seasons" data-group="seasons"></nav>
+      <section id="episodes" data-group="episodes"></section>
+    </div>
+  </div>
+
+  <div id="player" class="screen hidden">
+    <div id="osd" class="osd">
+      <div id="osd-title"></div>
+      <div id="osd-sub"></div>
+      <div class="bar"><div id="osd-progress"></div></div>
+    </div>
+    <div id="spinner" class="spinner hidden"></div>
+  </div>
+
+  <div id="loading" class="loading hidden">Carregando…</div>
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="$WEBAPIS/webapis/webapis.js"></script>
+  <script src="lib/hls.min.js"></script>
+  <script src="js/api.js"></script>
+  <script src="js/nav.js"></script>
+  <script src="js/player.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
