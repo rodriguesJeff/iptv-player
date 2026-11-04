@@ -2,8 +2,12 @@ package dev.local.iptvplayer
 
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.app.PictureInPictureParams
 import android.content.pm.ApplicationInfo
+import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.graphics.Color
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -99,11 +103,19 @@ class MainActivity : Activity() {
         hideSystemBars(window.decorView)
     }
 
-    // Release on stop so the single allowed connection is freed as soon as we leave.
+    // Release on stop unless the Activity is being kept alive by Picture-in-Picture.
     override fun onStop() {
         super.onStop()
-        web.evaluateJavascript("Player.close()", null)
-        releasePlayer()
+        if (Build.VERSION.SDK_INT < 24 || !isInPictureInPictureMode) {
+            web.evaluateJavascript("Player.close()", null)
+            releasePlayer()
+        }
+    }
+
+    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        web.visibility = if (isInPictureInPictureMode) View.GONE else View.VISIBLE
+        if (!isInPictureInPictureMode) hideSystemBars(window.decorView)
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -176,6 +188,22 @@ class MainActivity : Activity() {
             p.prepare()
             p.playWhenReady = true
             playerView.visibility = View.VISIBLE
+        }
+
+        @JavascriptInterface
+        fun canPictureInPicture(): Boolean {
+            return Build.VERSION.SDK_INT >= 24 && packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
+        }
+
+        @JavascriptInterface
+        fun enterPictureInPicture() = main.post {
+            if (!canPictureInPicture() || player == null) return@post
+            if (Build.VERSION.SDK_INT >= 26) {
+                enterPictureInPictureMode(PictureInPictureParams.Builder().build())
+            } else if (Build.VERSION.SDK_INT >= 24) {
+                @Suppress("DEPRECATION")
+                enterPictureInPictureMode()
+            }
         }
 
         @JavascriptInterface

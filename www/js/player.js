@@ -9,6 +9,7 @@ var Player = (function () {
   var osdSub = document.getElementById('osd-sub');
   var osdBar = osd.querySelector('.bar');
   var osdProgress = document.getElementById('osd-progress');
+  var pipButton = document.getElementById('pip');
   var spinner = document.getElementById('spinner');
 
   var list = [], index = 0;
@@ -80,6 +81,13 @@ var Player = (function () {
   };
 
   var droid = {
+    canPip: function () {
+      return !!(android && android.canPictureInPicture && android.canPictureInPicture());
+    },
+    pip: function () {
+      if (droid.canPip()) android.enterPictureInPicture();
+      return Promise.resolve();
+    },
     open: function (item) {
       busy(true);
       android.open(item.url, !!item.live);
@@ -97,6 +105,14 @@ var Player = (function () {
   };
 
   var html5 = {
+    canPip: function () {
+      return !!(document.pictureInPictureEnabled && video.requestPictureInPicture);
+    },
+    pip: function () {
+      if (!html5.canPip()) return Promise.reject(new Error('indisponível'));
+      if (document.pictureInPictureElement) return document.exitPictureInPicture();
+      return video.requestPictureInPicture();
+    },
     open: function (item) {
       html5.stop();
       video.style.display = 'block';
@@ -132,6 +148,15 @@ var Player = (function () {
 
   video.addEventListener('playing', function () { busy(false); });
   video.addEventListener('waiting', function () { busy(true); });
+  video.addEventListener('enterpictureinpicture', function () {
+    pipButton.textContent = 'Fechar miniplayer';
+  });
+  video.addEventListener('leavepictureinpicture', function () {
+    pipButton.textContent = 'Miniplayer';
+  });
+  pipButton.addEventListener('click', function () {
+    backend.pip().catch(function () { App.toast('Miniplayer indisponível'); });
+  });
   video.addEventListener('ended', function () { if (mode !== 'idle' && !list[index].live) close(); });
   video.addEventListener('error', function () { if (mode !== 'idle' && video.getAttribute('src')) fail(video.error && video.error.code); });
 
@@ -151,6 +176,7 @@ var Player = (function () {
     document.body.classList.toggle('playing', playing);
     document.body.classList.toggle('fullplay', mode === 'full');
     screenEl.classList.toggle('hidden', mode !== 'full');
+    pipButton.classList.toggle('hidden', !(mode === 'full' && ((backend === html5 && html5.canPip()) || (backend === droid && droid.canPip()))));
     if (mode !== 'full') busy(false);
     clearInterval(progressTimer);
     if (mode === 'full') progressTimer = setInterval(updateProgress, 1000);

@@ -17,6 +17,15 @@ Remote: arrows move, OK on a channel or movie plays it in the preview box, OK ag
 full screen, Back returns to the preview, Back again stops. In full-screen live TV, up/down
 (or CH+/CH-) change channel. In movies, left/right seek, OK pauses.
 
+Miniplayer: browsers with HTML5 Picture-in-Picture show a **Miniplayer** button during
+full-screen HTML5 playback. Android devices with native PiP support expose the same action
+and keep ExoPlayer alive while the app is minimized. Unsupported browsers, Android devices,
+Tizen, and Android TV launchers use the existing preview/full-screen behavior.
+
+Web test: start `node dev/mock-server.js`, open the app in a browser, play the mock VOD, and
+use **Miniplayer**. Android test: build/install the APK, play a VOD, enter full screen, use
+**Miniplayer**, then return to the app; the stream must not reconnect during the transition.
+
 ## Android
 
 Needs JDK 17+ (`JAVA_HOME`) and the Android SDK.
