@@ -1,0 +1,21 @@
+{
+	auto_https off
+	admin off
+}
+
+# Dokploy's Traefik terminates HTTPS and forwards to this container on :80.
+:80 {
+	# Xtream/XUI endpoints: proxied so the browser stays same-origin (no CORS, no mixed content).
+	@iptv path /player_api.php /live/* /movie/* /series/* /hls/*
+	handle @iptv {
+		reverse_proxy {$IPTV_UPSTREAM} {
+			header_up Host {upstream_hostport}
+			flush_interval -1
+		}
+	}
+
+	handle {
+		root * /srv
+		file_server
+	}
+}
