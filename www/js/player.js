@@ -18,6 +18,14 @@ var Player = (function () {
   var previewEl = null;
   var hls = null, osdTimer = null, zapTimer = null, progressTimer = null;
   var onClose = null, onReturn = null;
+  var played = 0, lastCur = -1;   // seconds actually played of the current item (drives onProgress)
+  var html5Start = 0;             // pending start position for the HTML5 backend
+
+  // Resume position in seconds, or 0. Small offsets start from the beginning.
+  function startOf(item) {
+    var s = Number(item && item.start) || 0;
+    return !item || item.live || s < 30 ? 0 : s;
+  }
 
   var avplay = window.webapis && window.webapis.avplay;
   var android = window.AndroidBridge;
@@ -41,7 +49,7 @@ var Player = (function () {
         avplay.setListener({
           onbufferingstart: function () { busy(true); },
           onbufferingcomplete: function () { busy(false); tizen.rect(surfaceRect()); },
-          onstreamcompleted: function () { if (!item.live) close(); },
+          onstreamcompleted: function () { if (!item.live) close(true); },
           onerror: function (e) { busy(false); fail(e); }
         });
         busy(true);
@@ -49,7 +57,12 @@ var Player = (function () {
           busy(false);
           // Older AVPlay (Tizen 6.5) resets the rect during prepare; apply it again
           tizen.rect(surfaceRect());
-          avplay.play();
+          var start = startOf(item);
+          if (!start) { avplay.play(); return; }
+          // Seek before the first frame; on failure just play from the beginning.
+          try {
+            avplay.seekTo(start * 1000, function () { avplay.play(); }, function () { avplay.play(); });
+          } catch (e) { avplay.play(); }
         }, function (e) { busy(false); fail(e); });
       } catch (e) { busy(false); fail(e); }
     },
@@ -90,7 +103,7 @@ var Player = (function () {
     },
     open: function (item) {
       busy(true);
-      android.open(item.url, !!item.live);
+      android.open(item.url, !!item.live, startOf(item) * 1000);
       droid.rect(surfaceRect());
     },
     stop: function () { android.stop(); },
@@ -118,6 +131,7 @@ var Player = (function () {
       video.style.display = 'block';
       html5.rect(surfaceRect());
       var url = item.live ? item.url.replace(/\.ts$/, '.m3u8') : item.url;
+      html5Start = startOf(item);
       busy(true);
       if (/\.m3u8(\?|$)/.test(url) && window.Hls && Hls.isSupported()) {
         hls = new Hls({ enableWorker: true, lowLatencyMode: false });
@@ -130,6 +144,7 @@ var Player = (function () {
       video.play().catch(function () { /* autoplay may need a key press */ });
     },
     stop: function () {
+      html5Start = 0;
       if (hls) { hls.destroy(); hls = null; }
       video.removeAttribute('src');
       video.load();
@@ -146,6 +161,11 @@ var Player = (function () {
     position: function () { return { cur: video.currentTime || 0, dur: isFinite(video.duration) ? video.duration : 0 }; }
   };
 
+  video.addEventListener('loadedmetadata', function () {
+    if (!html5Start) return;
+    try { video.currentTime = html5Start; } catch (e) { /* not seekable: play from the start */ }
+    html5Start = 0;
+  });
   video.addEventListener('playing', function () { busy(false); });
   video.addEventListener('waiting', function () { busy(true); });
   video.addEventListener('enterpictureinpicture', function () {
@@ -157,7 +177,7 @@ var Player = (function () {
   pipButton.addEventListener('click', function () {
     backend.pip().catch(function () { App.toast('Miniplayer indisponível'); });
   });
-  video.addEventListener('ended', function () { if (mode !== 'idle' && !list[index].live) close(); });
+  video.addEventListener('ended', function () { if (mode !== 'idle' && !list[index].live) close(true); });
   video.addEventListener('error', function () { if (mode !== 'idle' && video.getAttribute('src')) fail(video.error && video.error.code); });
 
   var backend = android ? droid : avplay ? tizen : html5;
@@ -207,7 +227,31 @@ var Player = (function () {
       osdProgress.style.width = (100 * p.cur / p.dur) + '%';
       osdSub.textContent = fmt(p.cur) + ' / ' + fmt(p.dur);
     }
+    // Count only seconds where the position moved (not buffering/paused).
+    if (p.cur > 0 && p.cur !== lastCur) {
+      if (lastCur >= 0) played++;
+      lastCur = p.cur;
+      if (played > 0 && played % 15 === 0) report(false);
+    }
   }
+
+  // Tell the item's owner where playback is; ignored until 15 s were actually played.
+  function report(final, ended) {
+    var item = list[index];
+    if (!item || item.live || !item.onProgress) return;
+    if (!ended && played < 15) return;
+    var p = backend.position();
+    if (ended && p.dur > 0) p.cur = p.dur;
+    if (p.dur > 0) {
+      try { item.onProgress(p.cur, p.dur, final); } catch (e) { /* owner error must not stop playback */ }
+    }
+  }
+
+  function resetProgress() { played = 0; lastCur = -1; }
+
+  function hidden() { if (mode !== 'idle') report(true); }
+  document.addEventListener('visibilitychange', function () { if (document.hidden) hidden(); });
+  window.addEventListener('pagehide', hidden);
 
   function render(item) {
     osdTitle.textContent = (item.num ? item.num + '  ' : '') + item.title;
@@ -248,8 +292,9 @@ var Player = (function () {
     if (onReturn) onReturn(index);
   }
 
-  function close() {
+  function close(ended) {
     if (mode === 'idle') return;
+    report(true, ended === true);
     var cb = fromPreview ? null : onClose;
     mode = 'idle';
     clearTimeout(zapTimer);
@@ -264,7 +309,7 @@ var Player = (function () {
     mode: function () { return mode; },
     isFull: function () { return mode === 'full'; },
 
-    // items: [{title, url, live, streamId, num, subtitle}]
+    // items: [{title, url, live, streamId, num, subtitle, start, onProgress(cur, dur, final)}]
     // Plays inside `box` (the page leaves it transparent); selecting the same item again goes full screen.
     preview: function (items, startIndex, box, returned) {
       if (mode === 'preview' && same(list[index], items[startIndex])) { goFull(); return; }
@@ -272,6 +317,7 @@ var Player = (function () {
       clearTimeout(zapTimer);
       list = items;
       index = startIndex;
+      resetProgress();
       previewEl = box;
       onReturn = returned;
       onClose = null;
@@ -285,6 +331,7 @@ var Player = (function () {
       clearTimeout(zapTimer);
       list = items;
       index = startIndex;
+      resetProgress();
       onClose = closed;
       onReturn = null;
       fromPreview = false;
@@ -294,13 +341,13 @@ var Player = (function () {
       backend.open(list[index]);
     },
 
-    close: close,
+    close: function () { close(); },
 
     // Native player events (Android bridge).
     onNative: function (type, value) {
       if (type === 'buffering') busy(!!value);
       else if (type === 'error') { busy(false); fail(value); }
-      else if (type === 'ended' && list[index] && !list[index].live) close();
+      else if (type === 'ended' && list[index] && !list[index].live) close(true);
     },
 
     // Keys while full screen.

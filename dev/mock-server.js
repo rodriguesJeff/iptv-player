@@ -1,5 +1,8 @@
 // Fake XUI.one server + static host for testing the UI in a desktop browser.
 // Run: node dev/mock-server.js  → open http://localhost:8787  (server field: http://localhost:8787, user/pass: test/test)
+// MOCK_MP4=/path/video.mp4 serves that local file (with Range) for movies/episodes instead of the 10 s sample,
+// useful to test resume. Logs never include the query string: it carries the password.
+// SYNC_UPSTREAM=http://127.0.0.1:8790 proxies /sync/* to a local deploy/sync service (like the Caddy deploy).
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -65,17 +68,45 @@ function api(q) {
   return [];
 }
 
+function serveRange(req, res, file) {
+  const size = fs.statSync(file).size;
+  const m = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '');
+  if (!m) {
+    res.writeHead(200, { 'Content-Type': 'video/mp4', 'Content-Length': size, 'Accept-Ranges': 'bytes' });
+    return fs.createReadStream(file).pipe(res);
+  }
+  const start = m[1] ? Number(m[1]) : Math.max(0, size - Number(m[2]));
+  const end = m[1] && m[2] ? Math.min(Number(m[2]), size - 1) : size - 1;
+  res.writeHead(206, { 'Content-Type': 'video/mp4', 'Content-Length': end - start + 1, 'Accept-Ranges': 'bytes',
+    'Content-Range': `bytes ${start}-${end}/${size}` });
+  fs.createReadStream(file, { start, end }).pipe(res);
+}
+
 const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png' };
 
 http.createServer((req, res) => {
   const u = new URL(req.url, `http://localhost:${PORT}`);
-  console.log(req.method, u.pathname + u.search);
+  console.log(req.method, u.pathname.replace(/^\/(live|movie|series)\/[^/]+\/[^/]+\//, '/$1/***/***/'));
   if (u.pathname === '/player_api.php') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify(api(u.searchParams)));
   }
+  if (/^\/sync\//.test(u.pathname)) {
+    if (!process.env.SYNC_UPSTREAM) { res.writeHead(404); return res.end(); }
+    const up = new URL(process.env.SYNC_UPSTREAM);
+    const p = http.request({ host: up.hostname, port: up.port, path: req.url, method: req.method,
+      headers: { ...req.headers, 'x-forwarded-for': req.socket.remoteAddress } }, (r) => {
+      res.writeHead(r.statusCode, r.headers);
+      r.pipe(res);
+    });
+    p.on('error', () => { res.writeHead(502); res.end(); });
+    return req.pipe(p);
+  }
   if (/^\/live\//.test(u.pathname)) { res.writeHead(302, { Location: TEST_HLS }); return res.end(); }
-  if (/^\/(movie|series)\//.test(u.pathname)) { res.writeHead(302, { Location: TEST_MP4 }); return res.end(); }
+  if (/^\/(movie|series)\//.test(u.pathname)) {
+    if (process.env.MOCK_MP4) return serveRange(req, res, process.env.MOCK_MP4);
+    res.writeHead(302, { Location: TEST_MP4 }); return res.end();
+  }
   const file = path.join(WWW, u.pathname === '/' ? 'index.html' : path.normalize(u.pathname));
   if (!file.startsWith(WWW) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) { res.writeHead(404); return res.end(); }
   res.writeHead(200, { 'Content-Type': types[path.extname(file)] || 'application/octet-stream' });

@@ -107,8 +107,9 @@ class MainActivity : Activity() {
     override fun onStop() {
         super.onStop()
         if (Build.VERSION.SDK_INT < 24 || !isInPictureInPictureMode) {
-            web.evaluateJavascript("Player.close()", null)
-            releasePlayer()
+            // Release only after the page closed the player: Player.close() reads the final
+            // position through Bridge.position() to save series progress.
+            web.evaluateJavascript("Player.close()") { releasePlayer() }
         }
     }
 
@@ -176,15 +177,17 @@ class MainActivity : Activity() {
     }
 
     inner class Bridge {
+        /** [startMs] > 0 resumes VOD there, prepared once (single connection). */
         @JavascriptInterface
-        fun open(url: String, live: Boolean) = main.post {
+        fun open(url: String, live: Boolean, startMs: Double) = main.post {
             val p = ensurePlayer()
             val mime = when {
                 url.contains(".m3u8") -> MimeTypes.APPLICATION_M3U8
                 url.endsWith(".ts") -> MimeTypes.VIDEO_MP2T
                 else -> null
             }
-            p.setMediaItem(MediaItem.Builder().setUri(url).setMimeType(mime).build())
+            val item = MediaItem.Builder().setUri(url).setMimeType(mime).build()
+            if (!live && startMs > 0) p.setMediaItem(item, startMs.toLong()) else p.setMediaItem(item)
             p.prepare()
             p.playWhenReady = true
             playerView.visibility = View.VISIBLE

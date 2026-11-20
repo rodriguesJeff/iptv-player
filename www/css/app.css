@@ -224,6 +224,23 @@ body.playing #preview::after { content: none; }
 .series-head h2 { margin: 0 0 0.4rem; }
 .series-head p { margin: 0; color: var(--muted); max-height: 6.5em; overflow: hidden; }
 #episodes { grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr)); }
+.series-actions { display: flex; gap: 0.6rem; margin-top: 0.8rem; flex-wrap: wrap; }
+
+/* Favorites and progress */
+.card { position: relative; }
+.card.fav::after {
+  content: "★";
+  position: absolute;
+  top: 0.6rem; right: 0.7rem;
+  color: var(--focus);
+  font-size: 1.3rem;
+  text-shadow: 0 0 0.3rem #000;
+}
+.fav-btn { display: block; margin-bottom: 0.8rem; }
+.btn.on { color: var(--focus); }
+.ep-progress { height: 0.25rem; background: var(--panel-2); border-radius: 0.2rem; overflow: hidden; }
+.ep-progress > div { height: 100%; background: var(--accent); }
+.ep-done { color: #3fb950; font-size: 0.85rem; }
 
 /* Player */
 #player { background: transparent; }

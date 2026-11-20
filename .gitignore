@@ -5,3 +5,8 @@ android/build/
 android/local.properties
 android/.kotlin/
 .DS_Store
+
+# Local environment files (secrets live only in Dokploy)
+.env
+*.env
+!.env.example
