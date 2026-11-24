@@ -1,6 +1,10 @@
 {
 	auto_https off
 	admin off
+	servers {
+		# Keep the client address Traefik puts in X-Forwarded-For (Docker network only).
+		trusted_proxies static private_ranges
+	}
 }
 
 # Dokploy's Traefik terminates HTTPS and forwards to this container on :80.
@@ -12,6 +16,15 @@
 			header_up Host {upstream_hostport}
 			flush_interval -1
 		}
+	}
+
+	# Favorites/progress sync service (deploy/sync), reachable only through this proxy.
+	# Without SYNC_UPSTREAM the route answers 502 and the app keeps its data local.
+	handle /sync/* {
+		request_body {
+			max_size 300KB
+		}
+		reverse_proxy {$SYNC_UPSTREAM:127.0.0.1:9}
 	}
 
 	handle {

@@ -17,6 +17,7 @@
       <label>Servidor<input id="f-server" class="focusable" type="url" placeholder="http://servidor:porta" autocomplete="off"></label>
       <label>Usuário<input id="f-user" class="focusable" type="text" autocomplete="off" autocapitalize="off"></label>
       <label>Senha<input id="f-pass" class="focusable" type="password" autocomplete="off"></label>
+      <label id="f-sync-row">Servidor de sincronização (opcional)<input id="f-sync" class="focusable" type="url" placeholder="https://seu-dominio" autocomplete="off"></label>
       <button id="f-format" class="focusable btn" type="button">Formato ao vivo: m3u8</button>
       <button id="f-login" class="focusable btn primary" type="button">Entrar</button>
       <p id="login-msg" class="msg"></p>
@@ -28,6 +29,7 @@
       <button class="focusable tab" data-tab="live">Ao vivo</button>
       <button class="focusable tab" data-tab="vod">Filmes</button>
       <button class="focusable tab" data-tab="series">Séries</button>
+      <button class="focusable tab" data-tab="favs">Favoritos</button>
       <input id="search" class="focusable" type="search" placeholder="Buscar…" autocomplete="off">
       <span id="account" class="account"></span>
       <button id="logout" class="focusable tab" type="button">Sair</button>
@@ -48,6 +50,10 @@
       <div>
         <h2 id="series-title"></h2>
         <p id="series-plot"></p>
+        <div class="series-actions" data-group="series-actions">
+          <button id="series-continue" class="focusable btn primary hidden" type="button"></button>
+          <button id="series-fav" class="focusable btn" type="button">☆ Favoritar</button>
+        </div>
       </div>
     </header>
     <div class="body">
@@ -72,6 +78,9 @@
   <script src="$WEBAPIS/webapis/webapis.js"></script>
   <script src="lib/hls.min.js"></script>
   <script src="js/api.js"></script>
+  <script src="js/merge.js"></script>
+  <script src="js/library.js"></script>
+  <script src="js/sync.js"></script>
   <script src="js/nav.js"></script>
   <script src="js/player.js"></script>
   <script src="js/app.js"></script>

@@ -14,6 +14,8 @@ var App = (function () {
   var detailsTimer = null, catTimer = null, searchTimer = null, toastTimer = null;
   var seriesEpisodes = {};
   var seriesOrigin = null;
+  var seriesCur = null;    // {id, name, cover} of the open series
+  var seriesSeason = null;
 
   // ---------- helpers ----------
   function el(tag, cls, text) {
@@ -63,12 +65,30 @@ var App = (function () {
   // ---------- login ----------
   function updateFormatBtn(fmt) { $('f-format').textContent = 'Formato ao vivo: ' + fmt; }
 
+  // Web deploy: the sync service is on the same origin. Android/Tizen (file://): optional field.
+  var webHosted = /^https?:$/.test(location.protocol);
+  if (webHosted) $('f-sync-row').classList.add('hidden');
+  var syncUrl = '';
+
+  function cfgToSave() {
+    var c = Api.config();
+    return { server: c.server, user: c.user, pass: c.pass, format: c.format, sync: webHosted ? '' : syncUrl };
+  }
+
   function doLogin(cfg, silent) {
+    syncUrl = webHosted ? location.origin : String(cfg.sync || '').trim();
+    if (syncUrl && Sync.normalize(syncUrl) === false) {
+      show('login', silent ? undefined : $('f-sync'));
+      $('login-msg').textContent = 'Servidor de sincronização precisa usar https://';
+      return Promise.resolve();
+    }
     Api.configure(cfg);
     loading(true);
     $('login-msg').textContent = '';
     return Api.login().then(function (info) {
-      saveCfg(Api.config());
+      saveCfg(cfgToSave());
+      Library.use(Api.config().server, Api.config().user);
+      Sync.start(syncUrl, Api.config());
       var exp = Number(info.user_info.exp_date);
       $('account').textContent = exp ? 'Expira ' + new Date(exp * 1000).toLocaleDateString('pt-BR') : '';
       data = {};
@@ -91,20 +111,46 @@ var App = (function () {
       server: $('f-server').value,
       user: $('f-user').value,
       pass: $('f-pass').value,
+      sync: $('f-sync').value,
       format: $('f-format').textContent.indexOf('m3u8') >= 0 ? 'm3u8' : 'ts'
     });
   });
 
   $('logout').addEventListener('click', function () {
     var c = Api.config();
-    saveCfg({ server: c.server, format: c.format });
     Player.close();
+    Sync.logout();
+    saveCfg({ server: c.server, format: c.format, sync: webHosted ? '' : syncUrl });
     $('f-pass').value = '';
     show('login');
   });
 
   // ---------- main ----------
+  // Favorites tab: built from the Library each time, items tagged with their real kind.
+  function buildFavs() {
+    var items = Library.recent().map(function (r) {
+      return { _kind: 'series', _continue: r.last, series_id: r.id, name: r.name, cover: r.cover, category_id: 'continue' };
+    });
+    Library.favs().forEach(function (f) {
+      if (f.kind === 'vod') {
+        items.push({ _kind: 'vod', stream_id: f.id, name: f.name, stream_icon: f.img, container_extension: f.ext, category_id: 'vod' });
+      } else if (f.kind === 'series') {
+        items.push({ _kind: 'series', series_id: f.id, name: f.name, cover: f.img, category_id: 'series' });
+      }
+    });
+    data.favs = {
+      cats: [
+        { category_id: 'continue', category_name: 'Continuar assistindo' },
+        { category_id: 'vod', category_name: 'Filmes' },
+        { category_id: 'series', category_name: 'Séries' }
+      ],
+      items: items
+    };
+    return data.favs;
+  }
+
   function ensure(kind) {
+    if (kind === 'favs') return Promise.resolve(buildFavs());
     if (data[kind]) return Promise.resolve(data[kind]);
     loading(true);
     return Promise.all([Api.categories(kind), Api.streams(kind)]).then(function (r) {
@@ -125,17 +171,22 @@ var App = (function () {
     Nav.forget('cats');
     Nav.forget('items');
     return ensure(kind).then(function (d) {
-      renderCats(d.cats);
-      selectCat('all');
+      if (kind === 'favs') {
+        renderCats(d.cats, true);
+        selectCat(Library.recent().length ? 'continue' : 'vod');
+      } else {
+        renderCats(d.cats);
+        selectCat('all');
+      }
       var first = $('items').querySelector('.focusable');
       Nav.focus(first || $('cats').querySelector('.cat'));
     }).catch(function (e) { toast(e.message); });
   }
 
-  function renderCats(cats) {
+  function renderCats(cats, noAll) {
     var box = $('cats');
     box.innerHTML = '';
-    var all = [{ category_id: 'all', category_name: 'Todos' }].concat(cats);
+    var all = noAll ? cats : [{ category_id: 'all', category_name: 'Todos' }].concat(cats);
     all.forEach(function (c) {
       var b = el('button', 'focusable cat', c.category_name);
       b.setAttribute('data-id', c.category_id);
@@ -159,7 +210,8 @@ var App = (function () {
     var items = data[tab] ? data[tab].items : [];
     var q = $('search').value.trim().toLowerCase();
     view = items.filter(function (it) {
-      if (q) return String(it.name || '').toLowerCase().indexOf(q) >= 0;
+      // Search in the favorites tab covers favorites only ("continue" duplicates them).
+      if (q) return !it._continue && String(it.name || '').toLowerCase().indexOf(q) >= 0;
       return catId === 'all' || String(it.category_id) === catId;
     });
     renderItems();
@@ -172,7 +224,7 @@ var App = (function () {
     box.classList.toggle('list', tab === 'live');
     rendered = 0;
     Nav.forget('items');
-    if (!view.length) { box.appendChild(el('div', 'empty', 'Nada aqui.')); return; }
+    if (!view.length) { box.appendChild(el('div', 'empty', emptyText())); return; }
     renderMore();
   }
 
@@ -185,19 +237,77 @@ var App = (function () {
     rendered = end;
   }
 
+  function emptyText() {
+    if (tab !== 'favs' || $('search').value.trim()) return 'Nada aqui.';
+    if (catId === 'continue') return 'Nenhuma série em andamento. Assista a um episódio e ele aparece aqui.';
+    return 'Nenhum favorito ainda. Use ☆ Favoritar no painel de detalhes ou na tela da série, ' +
+      'a tecla vermelha do controle, ou pressione e segure um filme ou série.';
+  }
+
+  function kindOf(it) { return it._kind || tab; }
+  function idOf(it, kind) { return kind === 'vod' ? it.stream_id : it.series_id; }
+  function epLabel(last) { return 'T' + last.season + 'E' + last.num; }
+
   function card(it, i) {
+    var kind = kindOf(it);
     var b = el('button', 'focusable card');
     b.setAttribute('data-idx', i);
-    if (tab === 'live') {
+    if (kind === 'live') {
       b.classList.add('channel');
       b.appendChild(el('span', 'num', it.num != null ? String(it.num) : ''));
       b.appendChild(img(it.stream_icon));
     } else {
-      b.appendChild(img(tab === 'vod' ? it.stream_icon : it.cover));
+      b.appendChild(img(kind === 'vod' ? it.stream_icon : it.cover));
+      if (Library.isFav(kind, idOf(it, kind))) b.classList.add('fav');
+      // Long press (touch) / right click toggles the favorite.
+      b.addEventListener('contextmenu', function (e) { e.preventDefault(); toggleFav(i); });
     }
     b.appendChild(el('span', 'name', it.name));
+    if (it._continue) b.appendChild(el('span', 'muted', 'Parou em ' + epLabel(it._continue)));
     b.addEventListener('click', function () { openItem(i); });
     return b;
+  }
+
+  function favData(it, kind) {
+    return kind === 'vod'
+      ? { id: it.stream_id, name: it.name, img: it.stream_icon, ext: it.container_extension, cat: it.category_id }
+      : { id: it.series_id, name: it.name, img: it.cover, cat: it.category_id };
+  }
+
+  // Mark rendered cards after a favorite changed elsewhere (series screen, details panel).
+  function refreshFavMarks() {
+    Array.prototype.forEach.call($('items').querySelectorAll('.card[data-idx]'), function (c) {
+      var it = view[Number(c.getAttribute('data-idx'))];
+      var kind = it && kindOf(it);
+      if (kind && kind !== 'live') c.classList.toggle('fav', Library.isFav(kind, idOf(it, kind)));
+    });
+  }
+
+  // Rebuild the favorites grid in place, keeping focus close to where it was.
+  function reloadFavs(focusIdx) {
+    buildFavs();
+    applyFilter();
+    if (focusIdx == null) return;
+    var n = Math.min(focusIdx, view.length - 1);
+    Nav.focus(n >= 0 ? $('items').querySelector('[data-idx="' + n + '"]') : $('cats').querySelector('.selected'));
+  }
+
+  function toggleFav(i) {
+    var it = view[i];
+    var kind = it && kindOf(it);
+    if (!it || kind === 'live') return;
+    var on = Library.toggleFav(kind, favData(it, kind));
+    toast(on ? '★ Adicionado aos favoritos' : 'Removido dos favoritos');
+    if (tab === 'favs' && !it._continue) { reloadFavs(i); return; }
+    if (tab === 'favs') buildFavs();
+    refreshFavMarks();
+    var btn = $('info').querySelector('.fav-btn');
+    if (btn && btn.getAttribute('data-idx') === String(i)) favButtonLabel(btn, on);
+  }
+
+  function favButtonLabel(btn, on) {
+    btn.textContent = on ? '★ Favorito' : '☆ Favoritar';
+    btn.classList.toggle('on', on);
   }
 
   function liveEntry(it) {
@@ -207,13 +317,14 @@ var App = (function () {
   // First OK previews in the side panel, OK again on the same item goes full screen.
   function openItem(i) {
     var it = view[i];
-    if (tab === 'live') {
+    var kind = kindOf(it);
+    if (kind === 'live') {
       Player.preview(view.map(liveEntry), i, $('preview'), focusCard);
-    } else if (tab === 'vod') {
+    } else if (kind === 'vod') {
       Player.preview([{ title: it.name, url: Api.vodUrl(it.stream_id, it.container_extension), live: false }], 0,
         $('preview'), function () { focusCard(i); });
     } else {
-      openSeries(it);
+      openSeries(it, { focusContinue: !!it._continue });
     }
   }
 
@@ -229,9 +340,17 @@ var App = (function () {
     var it = view[i];
     var box = $('info');
     if (!it) return;
+    var kind = kindOf(it);
     box.innerHTML = '';
     box.appendChild(el('h3', '', it.name));
-    if (tab === 'live') {
+    if (kind !== 'live') {
+      var fb = el('button', 'focusable btn fav-btn');
+      fb.setAttribute('data-idx', i);
+      favButtonLabel(fb, Library.isFav(kind, idOf(it, kind)));
+      fb.addEventListener('click', function () { toggleFav(i); });
+      box.appendChild(fb);
+    }
+    if (kind === 'live') {
       box.appendChild(el('p', 'muted', 'Carregando guia…'));
       Api.shortEpg(it.stream_id).then(function (epg) {
         if (view[i] !== it) return;
@@ -246,8 +365,9 @@ var App = (function () {
           box.appendChild(d);
         });
       }).catch(function () { /* no EPG */ });
-    } else if (tab === 'series') {
+    } else if (kind === 'series') {
       if (it.cover) box.insertBefore(img(it.cover), box.firstChild);
+      if (it._continue) box.appendChild(el('p', 'muted', 'Parou em ' + epLabel(it._continue)));
       if (it.genre) box.appendChild(el('p', 'muted', it.genre));
       if (it.rating) box.appendChild(el('p', 'muted', '★ ' + it.rating));
       if (it.plot) box.appendChild(el('p', '', it.plot));
@@ -294,18 +414,72 @@ var App = (function () {
   });
 
   // ---------- series ----------
-  function openSeries(it) {
+  function seasonList() {
+    return Object.keys(seriesEpisodes).sort(function (a, b) { return Number(a) - Number(b); });
+  }
+
+  // Where "Continuar" goes: the last episode if unfinished, else the next one, else replay the last.
+  function resumeTarget() {
+    var pr = Library.progress(seriesCur.id);
+    if (!pr || !pr.last) return null;
+    var flat = [];
+    seasonList().forEach(function (s) {
+      (seriesEpisodes[s] || []).forEach(function (ep, i) { flat.push({ season: s, idx: i, ep: ep }); });
+    });
+    var at = -1;
+    for (var k = 0; k < flat.length; k++) if (String(flat[k].ep.id) === pr.last.epId) { at = k; break; }
+    if (at < 0) return null;                       // episode no longer on the server
+    var st = pr.eps[pr.last.epId];
+    var t = flat[at], label = 'Continuar';
+    if (st && st.done) {
+      if (at + 1 < flat.length) t = flat[at + 1];
+      else label = 'Rever';
+    }
+    var ts = Library.episodeState(seriesCur.id, t.ep.id);
+    return {
+      season: t.season, idx: t.idx, label: label + ' T' + t.season + 'E' + t.ep.episode_num,
+      start: label === 'Continuar' && ts && !ts.done ? ts.pos : 0
+    };
+  }
+
+  function updateSeriesActions() {
+    var c = $('series-continue');
+    var t = resumeTarget();
+    c.classList.toggle('hidden', !t);
+    c.textContent = t ? '▶ ' + t.label : '';
+    var f = $('series-fav');
+    var on = Library.isFav('series', seriesCur.id);
+    f.textContent = on ? '★ Favorito' : '☆ Favoritar';
+    f.classList.toggle('on', on);
+    return t;
+  }
+
+  $('series-continue').addEventListener('click', function () {
+    var t = resumeTarget();
+    if (!t) return;
+    selectSeason(t.season);
+    playEpisode(t.idx, t.start);
+  });
+
+  $('series-fav').addEventListener('click', function () {
+    var on = Library.toggleFav('series', { id: seriesCur.id, name: seriesCur.name, img: seriesCur.cover, cat: seriesCur.cat });
+    toast(on ? '★ Adicionado aos favoritos' : 'Removido dos favoritos');
+    updateSeriesActions();
+  });
+
+  function openSeries(it, opts) {
     seriesOrigin = document.activeElement;
     loading(true);
     Api.seriesInfo(it.series_id).then(function (r) {
       loading(false);
       var info = r.info || {};
-      $('series-title').textContent = info.name || it.name;
-      $('series-plot').textContent = info.plot || it.plot || '';
       var cover = info.cover || it.cover;
+      seriesCur = { id: String(it.series_id), name: info.name || it.name, cover: cover || '', cat: it.category_id };
+      $('series-title').textContent = seriesCur.name;
+      $('series-plot').textContent = info.plot || it.plot || '';
       if (cover) $('series-cover').src = cover; else $('series-cover').removeAttribute('src');
       seriesEpisodes = r.episodes || {};
-      var seasons = Object.keys(seriesEpisodes).sort(function (a, b) { return Number(a) - Number(b); });
+      var seasons = seasonList();
       var box = $('seasons');
       box.innerHTML = '';
       seasons.forEach(function (s) {
@@ -319,41 +493,78 @@ var App = (function () {
       });
       Nav.forget('seasons');
       Nav.forget('episodes');
-      if (seasons.length) selectSeason(seasons[0]);
+      Nav.forget('series-actions');
+      var t = updateSeriesActions();
+      if (seasons.length) selectSeason(t ? t.season : seasons[0]);
       else $('episodes').innerHTML = '<div class="empty">Nenhum episódio.</div>';
-      show('series', $('episodes').querySelector('.focusable'));
+      var first = t && opts && opts.focusContinue ? $('series-continue')
+        : t ? $('episodes').querySelector('[data-idx="' + t.idx + '"]') : null;
+      show('series', first || $('episodes').querySelector('.focusable') || $('series-fav'));
     }).catch(function (e) { loading(false); toast(e.message); });
   }
 
+  var seasonEntries = [];
+
   function selectSeason(s) {
+    seriesSeason = s;
     Array.prototype.forEach.call($('seasons').children, function (b) {
       b.classList.toggle('selected', b.getAttribute('data-season') === s);
     });
     var eps = seriesEpisodes[s] || [];
-    var title = $('series-title').textContent;
+    var series = seriesCur;
     var box = $('episodes');
     box.innerHTML = '';
     Nav.forget('episodes');
-    var entries = eps.map(function (ep) {
+    seasonEntries = eps.map(function (ep) {
+      var st = Library.episodeState(series.id, ep.id);
+      var meta = { id: ep.id, season: s, num: ep.episode_num, ext: ep.container_extension, title: ep.title };
       return {
-        title: title + ' – T' + s + 'E' + ep.episode_num,
+        title: series.name + ' – T' + s + 'E' + ep.episode_num,
         subtitle: ep.title,
         url: Api.episodeUrl(ep.id, ep.container_extension),
-        live: false
+        live: false,
+        start: st && !st.done ? st.pos : 0,
+        onProgress: function (cur, dur) { Library.saveProgress(series, meta, cur, dur); }
       };
     });
     eps.forEach(function (ep, i) {
       var b = el('button', 'focusable card episode');
+      b.setAttribute('data-idx', i);
       var info = ep.info || {};
       if (info.movie_image) {
         b.appendChild(img(info.movie_image));
       }
       b.appendChild(el('span', 'name', ep.episode_num + '. ' + (ep.title || '')));
       if (info.duration) b.appendChild(el('span', 'muted', info.duration));
-      b.addEventListener('click', function () {
-        Player.full(entries, i, function () { Nav.focus(b); });
-      });
+      var st = Library.episodeState(series.id, ep.id);
+      if (st && st.done) {
+        b.appendChild(el('span', 'ep-done', '✓ Assistido'));
+      } else if (st && st.dur > 0) {
+        var bar = el('div', 'ep-progress');
+        var fill = el('div');
+        fill.style.width = Math.min(100, Math.round(100 * st.pos / st.dur)) + '%';
+        bar.appendChild(fill);
+        b.appendChild(bar);
+      }
+      b.addEventListener('click', function () { playEpisode(i); });
       box.appendChild(b);
+    });
+  }
+
+  // Plays episode `i` of the shown season; `start` overrides the saved position.
+  function playEpisode(i, start) {
+    var entries = seasonEntries.slice();
+    if (start != null) {
+      entries[i] = Object.keys(entries[i]).reduce(function (o, k) { o[k] = entries[i][k]; return o; }, {});
+      entries[i].start = start;
+    }
+    var season = seriesSeason;
+    Player.full(entries, i, function () {
+      // Back from the player: show the new progress and keep focus on that episode.
+      updateSeriesActions();
+      if (current !== 'series' || seriesSeason !== season) return;
+      selectSeason(season);
+      Nav.focus($('episodes').querySelector('[data-idx="' + i + '"]'));
     });
   }
 
@@ -362,13 +573,13 @@ var App = (function () {
     37: 'left', 38: 'up', 39: 'right', 40: 'down', 13: 'enter',
     10009: 'back', 27: 'back', 8: 'back',
     427: 'chup', 428: 'chdown', 33: 'chup', 34: 'chdown',
-    10252: 'playpause', 415: 'play', 19: 'pause', 413: 'stop', 417: 'ff', 412: 'rw',
+    10252: 'playpause', 415: 'play', 19: 'pause', 413: 'stop', 417: 'ff', 412: 'rw', 403: 'red',
     65376: 'imedone', 65385: 'imecancel'
   };
 
   if (window.tizen && tizen.tvinputdevice) {
     ['MediaPlayPause', 'MediaPlay', 'MediaPause', 'MediaStop', 'MediaFastForward', 'MediaRewind',
-      'ChannelUp', 'ChannelDown'].forEach(function (name) {
+      'ChannelUp', 'ChannelDown', 'ColorF0Red'].forEach(function (name) {
       try { tizen.tvinputdevice.registerKey(name); } catch (e) { /* key not on this model */ }
     });
   }
@@ -383,7 +594,10 @@ var App = (function () {
     if (Player.isFull()) { Player.key('back'); return true; }
     if (Player.mode() === 'preview') { Player.close(); return true; }
     if (current === 'series') {
-      show('main', seriesOrigin && $('items').contains(seriesOrigin) ? seriesOrigin : undefined);
+      var origin = seriesOrigin && $('items').contains(seriesOrigin) ? seriesOrigin : undefined;
+      var idx = origin ? Number(origin.getAttribute('data-idx')) : 0;
+      show('main', origin);
+      if (tab === 'favs') reloadFavs(idx); else refreshFavMarks();
       return true;
     }
     if (current === 'main') {
@@ -442,6 +656,14 @@ var App = (function () {
 
     e.preventDefault();
     if (k === 'back') { back(); return; }
+    if (k === 'red') {
+      if (current === 'main' && a && a.classList.contains('card') && a.parentNode === $('items')) {
+        toggleFav(Number(a.getAttribute('data-idx')));
+      } else if (current === 'series') {
+        $('series-fav').click();
+      }
+      return;
+    }
     if (k === 'enter') {
       if (a && a.tagName === 'INPUT') editInput(a);
       else if (a && a.classList.contains('focusable')) a.click();
@@ -450,12 +672,29 @@ var App = (function () {
     if (k === 'up' || k === 'down' || k === 'left' || k === 'right') Nav.move(k);
   });
 
+  // ---------- sync ----------
+  Library.onChange = function () { Sync.schedule(2000); };
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) Sync.flush(); else Sync.schedule(0);
+  });
+  // Data from another device arrived: refresh what is on screen without stealing focus.
+  Sync.onSynced = function () {
+    if (current === 'series' && seriesCur) {
+      updateSeriesActions();
+    } else if (current === 'main' && !Player.isFull()) {
+      var a = document.activeElement;
+      if (tab === 'favs' && !(a && $('items').contains(a))) { buildFavs(); applyFilter(); }
+      else refreshFavMarks();
+    }
+  };
+
   // ---------- boot ----------
   (function boot() {
     var cfg = loadCfg();
     if (cfg.server) $('f-server').value = cfg.server;
     if (cfg.user) $('f-user').value = cfg.user;
     if (cfg.pass) $('f-pass').value = cfg.pass;
+    if (cfg.sync) $('f-sync').value = cfg.sync;
     updateFormatBtn(cfg.format || 'm3u8');
     if (cfg.server && cfg.user && cfg.pass) doLogin(cfg, true);
     else show('login');
